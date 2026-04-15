@@ -1,0 +1,7 @@
+{
+  "name": "Zentto Security Scan",
+  "description": "SAST + secret scan + deps CVE + IaC + GitHub Actions audit. Uses the org reusable workflow.",
+  "iconName": "shield",
+  "categories": ["Security"],
+  "filePatterns": [".*"]
+}
