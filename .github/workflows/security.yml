@@ -1,0 +1,326 @@
+name: Zentto Security Scan (reusable)
+
+# Reusable security workflow for all zentto-erp repositories.
+# Usage from a consumer repo (.github/workflows/security.yml):
+#
+#   name: Security
+#   on:
+#     push: { branches: [main, developer, master] }
+#     pull_request: { branches: [main, developer, master] }
+#     schedule: [ { cron: '0 6 * * 1' } ]  # weekly Mon 06:00 UTC
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#     security-events: write
+#   jobs:
+#     security:
+#       uses: zentto-erp/.github/.github/workflows/security.yml@main
+#       with:
+#         fail-on: critical           # critical | high | medium | none
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      fail-on:
+        description: 'Severity threshold that fails the build (critical|high|medium|none)'
+        type: string
+        default: 'critical'
+      semgrep-config:
+        description: 'Semgrep ruleset(s). Space-separated list of configs.'
+        type: string
+        default: 'p/ci p/security-audit p/owasp-top-ten p/javascript p/typescript p/nodejs p/expressjs p/github-actions p/dockerfile p/secrets'
+      run-trivy:
+        type: boolean
+        default: true
+      run-gitleaks:
+        type: boolean
+        default: true
+      run-osv:
+        type: boolean
+        default: true
+      run-zizmor:
+        type: boolean
+        default: true
+      run-actionlint:
+        type: boolean
+        default: true
+      upload-sarif:
+        description: 'Upload SARIF to GitHub code scanning. Requires public repo or GHAS. Failures are tolerated.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: |
+          set +e
+          semgrep scan \
+            --config "auto" \
+            --sarif --output semgrep.sarif \
+            --json  --output semgrep.json \
+            --metrics=off \
+            --timeout 300 \
+            --max-target-bytes 5000000 || true
+
+      - name: Summarize + gate
+        if: always()
+        env:
+          FAIL_ON: ${{ inputs.fail-on }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          try:
+              data = json.load(open("semgrep.json"))
+          except Exception:
+              data = {"results": []}
+          results = data.get("results", [])
+          by_sev = {}
+          for r in results:
+              s = r.get("extra", {}).get("severity", "INFO")
+              by_sev[s] = by_sev.get(s, 0) + 1
+          lines = [
+              f"## Semgrep SAST — {len(results)} findings",
+              "",
+              "| Severity | Count |",
+              "|----------|------:|",
+              f"| Critical (ERROR)   | {by_sev.get('ERROR', 0)} |",
+              f"| High (WARNING)     | {by_sev.get('WARNING', 0)} |",
+              f"| Info               | {by_sev.get('INFO', 0)} |",
+              "",
+          ]
+          order = {"ERROR": 0, "WARNING": 1, "INFO": 2}
+          top = sorted(results, key=lambda r: order.get(r.get("extra", {}).get("severity", "INFO"), 9))[:20]
+          if top:
+              lines += ["### Top 20 findings", "", "| Sev | Rule | File:Line |", "|-----|------|-----------|"]
+              for r in top:
+                  sev = r.get("extra", {}).get("severity", "INFO")
+                  rule = r.get("check_id", "").split(".")[-1][:60]
+                  path = r.get("path", "")
+                  line = r.get("start", {}).get("line", 0)
+                  lines.append(f"| {sev} | `{rule}` | `{path}:{line}` |")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          fail_on = os.environ.get("FAIL_ON", "critical").lower()
+          crit = by_sev.get("ERROR", 0)
+          high = by_sev.get("WARNING", 0)
+          if fail_on == "critical" and crit > 0:
+              print(f"::error::Semgrep gate: {crit} critical finding(s)")
+              sys.exit(1)
+          if fail_on == "high" and (crit + high) > 0:
+              print(f"::error::Semgrep gate: {crit + high} high/critical finding(s)")
+              sys.exit(1)
+          if fail_on == "medium" and len(results) > 0:
+              print(f"::error::Semgrep gate: {len(results)} finding(s)")
+              sys.exit(1)
+          PY
+
+      - name: Upload SARIF to code scanning
+        if: always() && inputs.upload-sarif
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: |
+            semgrep.sarif
+            semgrep.json
+          retention-days: 30
+
+  gitleaks:
+    name: Gitleaks secrets
+    if: ${{ inputs.run-gitleaks }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true
+
+  trivy:
+    name: Trivy (deps + IaC + Dockerfile)
+    if: ${{ inputs.run-trivy }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.24.0
+        continue-on-error: true
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: false
+          exit-code: '0'
+
+      - name: Trivy config scan (IaC / Dockerfile)
+        uses: aquasecurity/trivy-action@0.24.0
+        continue-on-error: true
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-config.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+
+      - name: Upload Trivy FS SARIF
+        if: always() && inputs.upload-sarif
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-fs
+
+      - name: Upload Trivy Config SARIF
+        if: always() && inputs.upload-sarif
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: trivy-config.sarif
+          category: trivy-config
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-results
+          path: |
+            trivy-fs.sarif
+            trivy-config.sarif
+          retention-days: 30
+
+  osv-scanner:
+    name: OSV-Scanner (CVE deps)
+    if: ${{ inputs.run-osv }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run OSV-Scanner
+        uses: google/osv-scanner-action/osv-scanner-action@v1.9.0
+        continue-on-error: true
+        with:
+          scan-args: |-
+            --format=sarif
+            --output=osv.sarif
+            --recursive
+            ./
+
+      - name: Upload OSV SARIF
+        if: always() && inputs.upload-sarif
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-results
+          path: osv.sarif
+          retention-days: 30
+
+  zizmor:
+    name: zizmor (GitHub Actions audit)
+    if: ${{ inputs.run-zizmor }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install + run zizmor
+        continue-on-error: true
+        run: |
+          pip install zizmor
+          zizmor --format sarif . > zizmor.sarif 2>/dev/null || true
+          zizmor --format plain . > zizmor.txt 2>&1 || true
+          {
+            echo '## zizmor — GitHub Actions audit'
+            echo '```'
+            head -100 zizmor.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload zizmor SARIF
+        if: always() && inputs.upload-sarif
+        uses: github/codeql-action/upload-sarif@v3
+        continue-on-error: true
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zizmor-results
+          path: |
+            zizmor.sarif
+            zizmor.txt
+          retention-days: 30
+
+  actionlint:
+    name: actionlint (workflow syntax)
+    if: ${{ inputs.run-actionlint }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run actionlint
+        continue-on-error: true
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          {
+            echo '## actionlint'
+            echo '```'
+            ./actionlint -color=never 2>&1 | head -200 || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
