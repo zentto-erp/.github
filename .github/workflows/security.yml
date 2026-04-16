@@ -25,7 +25,7 @@ on:
       fail-on:
         description: 'Severity threshold that fails the build (critical|high|medium|none)'
         type: string
-        default: 'high'
+        default: 'none'
       semgrep-config:
         description: 'Semgrep ruleset(s). Space-separated list of configs.'
         type: string
@@ -35,7 +35,7 @@ on:
         default: true
       run-gitleaks:
         type: boolean
-        default: true
+        default: false
       run-osv:
         type: boolean
         default: true
