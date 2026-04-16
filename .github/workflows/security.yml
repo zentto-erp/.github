@@ -60,14 +60,18 @@ jobs:
     permissions:
       contents: read
       security-events: write
-    container:
-      image: semgrep/semgrep:latest
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Semgrep
+        run: pip install semgrep
+
       - name: Run Semgrep (SARIF)
         run: |
-          set +e
           semgrep scan \
             --config "auto" \
             --sarif --output semgrep.sarif \
@@ -77,7 +81,6 @@ jobs:
 
       - name: Run Semgrep (JSON)
         run: |
-          set +e
           semgrep scan \
             --config "auto" \
             --json --output semgrep.json \
