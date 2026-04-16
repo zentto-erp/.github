@@ -65,13 +65,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run Semgrep
+      - name: Run Semgrep (SARIF)
         run: |
           set +e
           semgrep scan \
             --config "auto" \
             --sarif --output semgrep.sarif \
-            --json  --output semgrep.json \
+            --metrics=off \
+            --timeout 300 \
+            --max-target-bytes 5000000 || true
+
+      - name: Run Semgrep (JSON)
+        run: |
+          set +e
+          semgrep scan \
+            --config "auto" \
+            --json --output semgrep.json \
             --metrics=off \
             --timeout 300 \
             --max-target-bytes 5000000 || true
