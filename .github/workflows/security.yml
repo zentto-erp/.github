@@ -73,20 +73,24 @@ jobs:
       - name: Run Semgrep (SARIF)
         run: |
           semgrep scan \
-            --config "auto" \
+            --config "p/ci" --config "p/security-audit" --config "p/owasp-top-ten" \
+            --config "p/javascript" --config "p/typescript" --config "p/nodejs" \
             --sarif --output semgrep.sarif \
             --metrics=off \
             --timeout 300 \
             --max-target-bytes 5000000 || true
+          ls -la semgrep.sarif 2>&1 || echo "WARN: semgrep.sarif not created"
 
       - name: Run Semgrep (JSON)
         run: |
           semgrep scan \
-            --config "auto" \
+            --config "p/ci" --config "p/security-audit" --config "p/owasp-top-ten" \
+            --config "p/javascript" --config "p/typescript" --config "p/nodejs" \
             --json --output semgrep.json \
             --metrics=off \
             --timeout 300 \
             --max-target-bytes 5000000 || true
+          ls -la semgrep.json 2>&1 || echo "WARN: semgrep.json not created"
 
       - name: Summarize + gate
         if: always()
