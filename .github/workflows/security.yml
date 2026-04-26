@@ -109,7 +109,7 @@ jobs:
               s = r.get("extra", {}).get("severity", "INFO")
               by_sev[s] = by_sev.get(s, 0) + 1
           lines = [
-              f"## Semgrep SAST — {len(results)} findings",
+              f"## Semgrep SAST â€” {len(results)} findings",
               "",
               "| Severity | Count |",
               "|----------|------:|",
@@ -189,7 +189,7 @@ jobs:
           if [ -f gitleaks.json ]; then
             count=$(python3 -c "import json; d=json.load(open('gitleaks.json')); print(len(d))" 2>/dev/null || echo 0)
             {
-              echo "## Gitleaks — secrets scan"
+              echo "## Gitleaks â€” secrets scan"
               echo ""
               if [ "$count" -gt 0 ]; then
                 echo "**$count secret(s) found in git history**"
@@ -202,7 +202,7 @@ jobs:
               fi
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "## Gitleaks — no results (scan may have failed)" >> "$GITHUB_STEP_SUMMARY"
+            echo "## Gitleaks â€” no results (scan may have failed)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Upload gitleaks SARIF
@@ -237,7 +237,7 @@ jobs:
 
       # Cache Trivy DB (~150MB) entre runs.
       # Sin cache: cada run descarga la DB de mirror.gcr.io (lento + rate-limit risk).
-      # Con cache: -2 a 3 min/run, key rotativa por mes (Trivy publica DBs ~1x/día).
+      # Con cache: -2 a 3 min/run, key rotativa por mes (Trivy publica DBs ~1x/dÃ­a).
       # Docs: https://trivy.dev/docs/v0.70/guide/configuration/cache/
       - name: Cache Trivy DB
         uses: actions/cache@v4
@@ -248,25 +248,25 @@ jobs:
             trivy-db-${{ runner.os }}-
 
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: fs
           scan-ref: .
           format: sarif
           output: trivy-fs.sarif
-          # severity HIGH+CRITICAL solo (MEDIUM genera ruido sin acción inmediata).
+          # severity HIGH+CRITICAL solo (MEDIUM genera ruido sin acciÃ³n inmediata).
           severity: CRITICAL,HIGH
-          # ignore-unfixed: true → no reporta CVEs sin patch upstream (no podemos accionarlos).
+          # ignore-unfixed: true â†’ no reporta CVEs sin patch upstream (no podemos accionarlos).
           # Docs: https://trivy.dev/docs/v0.70/guide/scanner/vulnerability/
           ignore-unfixed: true
-          # scanners explícitos: vuln + misconfig (sin secret — gitleaks lo cubre aparte
+          # scanners explÃ­citos: vuln + misconfig (sin secret â€” gitleaks lo cubre aparte
           # per https://trivy.dev/docs/v0.70/guide/scanner/secret/#recommendation).
           scanners: vuln,misconfig
           exit-code: '0'
 
       - name: Trivy config scan (IaC / Dockerfile)
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         continue-on-error: true
         with:
           scan-type: config
@@ -358,7 +358,7 @@ jobs:
           zizmor --format sarif . > zizmor.sarif 2>/dev/null || true
           zizmor --format plain . > zizmor.txt 2>&1 || true
           {
-            echo '## zizmor — GitHub Actions audit'
+            echo '## zizmor â€” GitHub Actions audit'
             echo '```'
             head -100 zizmor.txt
             echo '```'
