@@ -235,27 +235,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache Trivy DB (~150MB) entre runs.
+      # Sin cache: cada run descarga la DB de mirror.gcr.io (lento + rate-limit risk).
+      # Con cache: -2 a 3 min/run, key rotativa por mes (Trivy publica DBs ~1x/día).
+      # Docs: https://trivy.dev/docs/v0.70/guide/configuration/cache/
+      - name: Cache Trivy DB
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            trivy-db-${{ runner.os }}-
+
       - name: Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@0.36.0
         continue-on-error: true
         with:
           scan-type: fs
           scan-ref: .
           format: sarif
           output: trivy-fs.sarif
-          severity: CRITICAL,HIGH,MEDIUM
-          ignore-unfixed: false
+          # severity HIGH+CRITICAL solo (MEDIUM genera ruido sin acción inmediata).
+          severity: CRITICAL,HIGH
+          # ignore-unfixed: true → no reporta CVEs sin patch upstream (no podemos accionarlos).
+          # Docs: https://trivy.dev/docs/v0.70/guide/scanner/vulnerability/
+          ignore-unfixed: true
+          # scanners explícitos: vuln + misconfig (sin secret — gitleaks lo cubre aparte
+          # per https://trivy.dev/docs/v0.70/guide/scanner/secret/#recommendation).
+          scanners: vuln,misconfig
           exit-code: '0'
 
       - name: Trivy config scan (IaC / Dockerfile)
-        uses: aquasecurity/trivy-action@0.35.0
+        uses: aquasecurity/trivy-action@0.36.0
         continue-on-error: true
         with:
           scan-type: config
           scan-ref: .
           format: sarif
           output: trivy-config.sarif
-          severity: CRITICAL,HIGH,MEDIUM
+          severity: CRITICAL,HIGH
 
       - name: Upload Trivy FS SARIF
         if: always() && inputs.upload-sarif
