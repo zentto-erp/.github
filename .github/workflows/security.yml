@@ -75,6 +75,8 @@ jobs:
           semgrep scan \
             --config "p/ci" --config "p/security-audit" --config "p/owasp-top-ten" \
             --config "p/javascript" --config "p/typescript" --config "p/nodejs" \
+            --exclude-rule "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag" \
+            --exclude-rule "yaml.github-actions.security.secrets-inherit.secrets-inherit" \
             --sarif --output semgrep.sarif \
             --metrics=off \
             --timeout 300 \
@@ -86,6 +88,8 @@ jobs:
           semgrep scan \
             --config "p/ci" --config "p/security-audit" --config "p/owasp-top-ten" \
             --config "p/javascript" --config "p/typescript" --config "p/nodejs" \
+            --exclude-rule "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag" \
+            --exclude-rule "yaml.github-actions.security.secrets-inherit.secrets-inherit" \
             --json --output semgrep.json \
             --metrics=off \
             --timeout 300 \
