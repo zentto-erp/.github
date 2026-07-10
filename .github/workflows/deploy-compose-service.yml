@@ -1,0 +1,162 @@
+# =============================================================================
+# deploy-compose-service.yml — workflow REUSABLE (workflow_call) de deploy de un
+#
+# NOTA (INFRA-15): vive en el repo org .github (PUBLICO) y no en zentto-infra
+# porque repos publicos (zentto-web) no pueden consumir reusables de repos
+# privados — regla de GitHub, independiente del access_level.
+# servicio docker compose en el servidor Zentto, con orden seguro y retry.
+#
+# Origen: INFRA-15 — el deploy embebido de cada repo hacia `docker rm -f` del
+# contenedor viejo ANTES del pull; un fallo transitorio de containerd durante el
+# pull dejo appdev.zentto.net en 502 sin upstream (post-mortem 2026-07-10).
+#
+# Garantias:
+#   1. PULL PRIMERO con retry (3 intentos, backoff): si el pull falla, el
+#      contenedor viejo sigue arriba — el servicio nunca queda sin upstream.
+#   2. Recreacion via `compose up -d --force-recreate` (sin rm manual previo).
+#   3. Health-check post-deploy: si no responde 200, el job falla con los logs
+#      del contenedor (nada de fallos silenciosos).
+#
+# Uso desde otro repo de la org:
+#   deploy:
+#     needs: build
+#     uses: zentto-erp/.github/.github/workflows/deploy-compose-service.yml@main
+#     with:
+#       service: frontend-dev
+#       container: zentto-frontend-dev
+#       workdir: /opt/zentto-dev
+#       compose_file: docker-compose.dev.yml
+#       health_url: https://appdev.zentto.net
+#       pre_script: |            # opcional: preparar .env, sync configs...
+#         cp /opt/zentto/.env.frontend /opt/zentto-dev/.env.frontend
+#       post_script: |           # opcional: nginx sync, cache warmup...
+#         nginx -t && systemctl reload nginx
+#     secrets:
+#       SSH_HOST: ${{ secrets.SSH_HOST }}
+#       SSH_USER: ${{ secrets.SSH_USER }}
+#       SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+#       GHCR_PAT: ${{ secrets.GHCR_PAT }}
+# =============================================================================
+name: Deploy compose service (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Nombre del servicio en el compose file"
+        required: true
+        type: string
+      container:
+        description: "Nombre del contenedor resultante (para logs/health)"
+        required: true
+        type: string
+      workdir:
+        description: "Directorio en el server donde vive el compose file"
+        required: true
+        type: string
+      compose_file:
+        description: "Compose file relativo a workdir"
+        required: true
+        type: string
+      health_url:
+        description: "URL a verificar post-deploy (espera HTTP 200/30x). Vacio = sin health-check"
+        required: false
+        type: string
+        default: ""
+      health_retries:
+        description: "Intentos del health-check (cada 10s)"
+        required: false
+        type: number
+        default: 18
+      pre_script:
+        description: "Script opcional a ejecutar en el server ANTES del deploy"
+        required: false
+        type: string
+        default: ""
+      post_script:
+        description: "Script opcional a ejecutar en el server DESPUES de recrear el servicio"
+        required: false
+        type: string
+        default: ""
+    secrets:
+      SSH_HOST:
+        required: true
+      SSH_USER:
+        required: true
+      SSH_PRIVATE_KEY:
+        required: true
+      GHCR_PAT:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy ${{ inputs.service }} (pull-first + retry + health)
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          PRE_SCRIPT: ${{ inputs.pre_script }}
+          POST_SCRIPT: ${{ inputs.post_script }}
+          SERVICE: ${{ inputs.service }}
+          CONTAINER: ${{ inputs.container }}
+          WORKDIR: ${{ inputs.workdir }}
+          COMPOSE: ${{ inputs.compose_file }}
+          HEALTH_URL: ${{ inputs.health_url }}
+          HEALTH_RETRIES: ${{ inputs.health_retries }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: PRE_SCRIPT,POST_SCRIPT,SERVICE,CONTAINER,WORKDIR,COMPOSE,HEALTH_URL,HEALTH_RETRIES,GHCR_PAT
+          script: |
+            set -e
+
+            # ── 0. pre_script (preparacion de .env / configs) ──────────────
+            if [ -n "$PRE_SCRIPT" ]; then
+              echo "── pre_script ──"
+              bash -e -c "$PRE_SCRIPT"
+            fi
+
+            # ── 1. Login + PULL PRIMERO con retry (contenedor viejo intacto) ─
+            printf '%s' "$GHCR_PAT" | docker login ghcr.io -u zentto-erp --password-stdin
+            cd "$WORKDIR"
+            PULLED=0
+            for i in 1 2 3; do
+              if docker compose -f "$COMPOSE" pull "$SERVICE"; then PULLED=1; break; fi
+              echo "⚠️ pull de $SERVICE fallo (intento $i/3) — reintento en $((i*20))s..."
+              sleep $((i*20))
+            done
+            if [ "$PULLED" -ne 1 ]; then
+              echo "❌ pull fallo 3 veces — el contenedor viejo $CONTAINER queda ARRIBA (sin downtime)"
+              exit 1
+            fi
+
+            # ── 2. Recrear el servicio con la imagen nueva ────────────────
+            docker compose -f "$COMPOSE" up -d --no-deps --force-recreate "$SERVICE"
+
+            # ── 3. post_script (nginx sync, etc.) ─────────────────────────
+            if [ -n "$POST_SCRIPT" ]; then
+              echo "── post_script ──"
+              bash -e -c "$POST_SCRIPT"
+            fi
+
+            # ── 4. Health-check: sin 200 no hay deploy "verde" ────────────
+            if [ -n "$HEALTH_URL" ]; then
+              echo "── health-check $HEALTH_URL ──"
+              OK=0
+              for i in $(seq 1 "$HEALTH_RETRIES"); do
+                CODE=$(curl -so /dev/null -w '%{http_code}' --max-time 10 "$HEALTH_URL" || echo 000)
+                case "$CODE" in
+                  200|301|302|307|308) OK=1; echo "✅ $HEALTH_URL -> $CODE (intento $i)"; break ;;
+                esac
+                echo "… $HEALTH_URL -> $CODE (intento $i/$HEALTH_RETRIES)"
+                sleep 10
+              done
+              if [ "$OK" -ne 1 ]; then
+                echo "❌ health-check fallo tras $HEALTH_RETRIES intentos — logs de $CONTAINER:"
+                docker logs --tail 50 "$CONTAINER" 2>&1 || true
+                exit 1
+              fi
+            fi
+            echo "✅ $SERVICE desplegado y verificado"
