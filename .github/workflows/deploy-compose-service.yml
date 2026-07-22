@@ -90,7 +90,13 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # Runner propio de la organizacion: este job entra al servidor por SSH, no
+    # necesita nada del runner salvo Docker (appleboy/ssh-action es una accion
+    # Docker). En ubuntu-latest quedaba a merced del budget de Actions y, con el
+    # budget agotado, GitHub ni siquiera lo iniciaba: el deploy fallaba en 2s con
+    # "The job was not started because an Actions budget is preventing further use"
+    # mientras build y config pasaban sin problema en el runner propio.
+    runs-on: [self-hosted, zentto-ci]
     steps:
       - name: Deploy ${{ inputs.service }} (pull-first + retry + health)
         uses: appleboy/ssh-action@v1.0.3
