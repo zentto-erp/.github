@@ -159,12 +159,13 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: semgrep-results
           path: |
             semgrep.sarif
             semgrep.json
-          retention-days: 30
+          retention-days: 7
 
   gitleaks:
     name: Gitleaks secrets
@@ -221,13 +222,14 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         continue-on-error: true
+        continue-on-error: true
         with:
           name: gitleaks-results
           path: |
             gitleaks.sarif
             gitleaks.json
             gitleaks.log
-          retention-days: 30
+          retention-days: 7
 
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
@@ -298,12 +300,13 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: trivy-results
           path: |
             trivy-fs.sarif
             trivy-config.sarif
-          retention-days: 30
+          retention-days: 7
 
   osv-scanner:
     name: OSV-Scanner (CVE deps)
@@ -336,10 +339,11 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: osv-results
           path: osv.sarif
-          retention-days: 30
+          retention-days: 7
 
   zizmor:
     name: zizmor (GitHub Actions audit)
@@ -379,12 +383,13 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: zizmor-results
           path: |
             zizmor.sarif
             zizmor.txt
-          retention-days: 30
+          retention-days: 7
 
   actionlint:
     name: actionlint (workflow syntax)
