@@ -134,6 +134,10 @@ jobs:
                   lines.append(f"| {sev} | `{rule}` | `{path}:{line}` |")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write("\n".join(lines) + "\n")
+          # Tambien al stdout del job: cuando la cuota de artifacts esta llena no
+          # hay SARIF descargable y el step summary no se ve con `gh run view --log`,
+          # asi que un gate rojo no dice QUE lo disparo.
+          print("\n".join(lines))
           fail_on = os.environ.get("FAIL_ON", "critical").lower()
           crit = by_sev.get("ERROR", 0)
           high = by_sev.get("WARNING", 0)
