@@ -62,6 +62,11 @@ jobs:
   semgrep:
     name: Semgrep SAST
     runs-on: [self-hosted, zentto-ci]
+    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
+    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
+    concurrency:
+      group: sec-semgrep-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       security-events: write
@@ -180,6 +185,11 @@ jobs:
     name: Gitleaks secrets
     if: ${{ inputs.run-gitleaks }}
     runs-on: [self-hosted, zentto-ci]
+    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
+    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
+    concurrency:
+      group: sec-gitleaks-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       security-events: write
@@ -243,6 +253,11 @@ jobs:
     name: Trivy (deps + IaC + Dockerfile)
     if: ${{ inputs.run-trivy }}
     runs-on: [self-hosted, zentto-ci]
+    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
+    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
+    concurrency:
+      group: sec-trivy-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       security-events: write
@@ -320,6 +335,11 @@ jobs:
     name: OSV-Scanner (CVE deps)
     if: ${{ inputs.run-osv }}
     runs-on: [self-hosted, zentto-ci]
+    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
+    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
+    concurrency:
+      group: sec-osv-scanner-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       security-events: write
@@ -357,6 +377,11 @@ jobs:
     name: zizmor (GitHub Actions audit)
     if: ${{ inputs.run-zizmor }}
     runs-on: [self-hosted, zentto-ci]
+    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
+    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
+    concurrency:
+      group: sec-zizmor-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
       security-events: write
@@ -403,6 +428,11 @@ jobs:
     name: actionlint (workflow syntax)
     if: ${{ inputs.run-actionlint }}
     runs-on: [self-hosted, zentto-ci]
+    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
+    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
+    concurrency:
+      group: sec-actionlint-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: true
     permissions:
       contents: read
     steps:
