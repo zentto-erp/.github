@@ -46,9 +46,14 @@ on:
         type: boolean
         default: true
       upload-sarif:
-        description: 'Upload SARIF to GitHub code scanning. Requires public repo or GHAS. Failures are tolerated.'
+        description: >-
+          Sube el SARIF a GitHub code scanning. Requiere repo publico o GHAS:
+          en un repo privado sin GHAS la API responde 403 y la action reintenta
+          durante ~1 minuto antes de rendirse, por cada uno de los 5 escaneres.
+          Por eso el default es false. Los hallazgos no se pierden: el gate ya
+          falla el job y lista la tabla en el log y en el step summary.
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
