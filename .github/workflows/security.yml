@@ -56,7 +56,7 @@ permissions:
 jobs:
   semgrep:
     name: Semgrep SAST
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zentto-ci]
     permissions:
       contents: read
       security-events: write
@@ -169,7 +169,7 @@ jobs:
   gitleaks:
     name: Gitleaks secrets
     if: ${{ inputs.run-gitleaks }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zentto-ci]
     permissions:
       contents: read
       security-events: write
@@ -232,7 +232,7 @@ jobs:
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
     if: ${{ inputs.run-trivy }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zentto-ci]
     permissions:
       contents: read
       security-events: write
@@ -308,7 +308,7 @@ jobs:
   osv-scanner:
     name: OSV-Scanner (CVE deps)
     if: ${{ inputs.run-osv }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zentto-ci]
     permissions:
       contents: read
       security-events: write
@@ -344,7 +344,7 @@ jobs:
   zizmor:
     name: zizmor (GitHub Actions audit)
     if: ${{ inputs.run-zizmor }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zentto-ci]
     permissions:
       contents: read
       security-events: write
@@ -389,7 +389,7 @@ jobs:
   actionlint:
     name: actionlint (workflow syntax)
     if: ${{ inputs.run-actionlint }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, zentto-ci]
     permissions:
       contents: read
     steps:
