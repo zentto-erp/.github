@@ -54,9 +54,45 @@ permissions:
   contents: read
 
 jobs:
+  # --- Enrutamiento hibrido (INFRA-17) -------------------------------------
+  # Selecciona donde corre cada clase de job segun la variable de organizacion
+  # CI_ROUTING_MODE. OPT-IN: si la variable no existe -> 'self-hosted-only'
+  # (comportamiento actual, este cambio es NO-OP hasta setear la var).
+  #   hybrid           -> fast=ubuntu-latest   heavy=[self-hosted,zentto-ci]
+  #   hosted-emergency -> fast=ubuntu-latest   heavy=ubuntu-latest
+  #   self-hosted-only -> fast=[self-hosted,zentto-ci] heavy=[self-hosted,zentto-ci]
+  # fast  = actionlint, zizmor, gitleaks (rapidos, sin docker/PG)
+  # heavy = semgrep, trivy, osv-scanner (SAST/deps/CVE, mas pesados)
+  route:
+    name: Route runners
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      fast: ${{ steps.r.outputs.fast }}
+      heavy: ${{ steps.r.outputs.heavy }}
+      mode: ${{ steps.r.outputs.mode }}
+    steps:
+      - id: r
+        env:
+          MODE: ${{ vars.CI_ROUTING_MODE || 'self-hosted-only' }}
+        run: |
+          case "$MODE" in
+            hybrid)             fast='"ubuntu-latest"';                heavy='["self-hosted","zentto-ci"]' ;;
+            hosted-emergency)   fast='"ubuntu-latest"';                heavy='"ubuntu-latest"' ;;
+            self-hosted-only|*) fast='["self-hosted","zentto-ci"]';    heavy='["self-hosted","zentto-ci"]' ;;
+          esac
+          {
+            echo "fast=$fast"
+            echo "heavy=$heavy"
+            echo "mode=$MODE"
+          } >> "$GITHUB_OUTPUT"
+          echo "### CI routing — mode=\`$MODE\` · fast=\`$fast\` · heavy=\`$heavy\`" >> "$GITHUB_STEP_SUMMARY"
+
   semgrep:
     name: Semgrep SAST
-    runs-on: [self-hosted, zentto-ci]
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.heavy) }}
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -169,7 +205,9 @@ jobs:
   gitleaks:
     name: Gitleaks secrets
     if: ${{ inputs.run-gitleaks }}
-    runs-on: [self-hosted, zentto-ci]
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.fast) }}
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -232,7 +270,9 @@ jobs:
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
     if: ${{ inputs.run-trivy }}
-    runs-on: [self-hosted, zentto-ci]
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.heavy) }}
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -308,7 +348,9 @@ jobs:
   osv-scanner:
     name: OSV-Scanner (CVE deps)
     if: ${{ inputs.run-osv }}
-    runs-on: [self-hosted, zentto-ci]
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.heavy) }}
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -344,7 +386,9 @@ jobs:
   zizmor:
     name: zizmor (GitHub Actions audit)
     if: ${{ inputs.run-zizmor }}
-    runs-on: [self-hosted, zentto-ci]
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.fast) }}
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -389,7 +433,9 @@ jobs:
   actionlint:
     name: actionlint (workflow syntax)
     if: ${{ inputs.run-actionlint }}
-    runs-on: [self-hosted, zentto-ci]
+    needs: route
+    runs-on: ${{ fromJSON(needs.route.outputs.fast) }}
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
