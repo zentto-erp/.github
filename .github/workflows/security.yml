@@ -46,65 +46,76 @@ on:
         type: boolean
         default: true
       upload-sarif:
-        description: >-
-          Sube el SARIF a GitHub code scanning. Requiere repo publico o GHAS:
-          en un repo privado sin GHAS la API responde 403 y la action reintenta
-          durante ~1 minuto antes de rendirse, por cada uno de los 5 escaneres.
-          Por eso el default es false. Los hallazgos no se pierden: el gate ya
-          falla el job y lista la tabla en el log y en el step summary.
+        description: 'Upload SARIF to GitHub code scanning. Requires public repo or GHAS. Failures are tolerated.'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: read
 
+# Un solo run de seguridad por repo+rama: un push nuevo cancela el anterior.
+# `github.workflow` resuelve al workflow del REPO que llama (cada consumer su grupo).
+# Antes: sin concurrency → cada push acumulaba runs hosted de 10-12 min en paralelo.
+concurrency:
+  group: security-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   semgrep:
     name: Semgrep SAST
-    runs-on: [self-hosted, zentto-ci]
-    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
-    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
-    concurrency:
-      group: sec-semgrep-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Profundidad completa: --baseline-commit necesita el commit base del PR
+          # para el escaneo diff-aware (solo código cambiado).
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
+      - name: Cache pip (Semgrep wheel)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-semgrep-${{ runner.os }}
+          restore-keys: pip-semgrep-
+
       - name: Install Semgrep
         run: pip install semgrep
 
-      - name: Run Semgrep (SARIF)
+      - name: Run Semgrep (una sola pasada → SARIF + JSON)
+        env:
+          # En PR: BASE_SHA existe → escaneo diff-aware (solo el diff vs rama base),
+          # que sigue bloqueando por hallazgos NUEVOS. En push/schedule: vacío → full-tree.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          BASELINE_ARG=""
+          if [ -n "$BASE_SHA" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+            BASELINE_ARG="--baseline-commit $BASE_SHA"
+            echo "==> PR diff-aware scan (baseline $BASE_SHA)"
+          else
+            echo "==> Full-tree scan (push/schedule)"
+          fi
+          # Un único scan emite ambos formatos (antes Semgrep corría 2 veces: -50% del paso más caro).
           semgrep scan \
             --config "p/ci" --config "p/security-audit" --config "p/owasp-top-ten" \
             --config "p/javascript" --config "p/typescript" --config "p/nodejs" \
             --exclude-rule "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag" \
             --exclude-rule "yaml.github-actions.security.secrets-inherit.secrets-inherit" \
-            --sarif --output semgrep.sarif \
+            --sarif-output semgrep.sarif \
+            --json-output semgrep.json \
             --metrics=off \
             --timeout 300 \
-            --max-target-bytes 5000000 || true
-          ls -la semgrep.sarif 2>&1 || echo "WARN: semgrep.sarif not created"
-
-      - name: Run Semgrep (JSON)
-        run: |
-          semgrep scan \
-            --config "p/ci" --config "p/security-audit" --config "p/owasp-top-ten" \
-            --config "p/javascript" --config "p/typescript" --config "p/nodejs" \
-            --exclude-rule "yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag" \
-            --exclude-rule "yaml.github-actions.security.secrets-inherit.secrets-inherit" \
-            --json --output semgrep.json \
-            --metrics=off \
-            --timeout 300 \
-            --max-target-bytes 5000000 || true
-          ls -la semgrep.json 2>&1 || echo "WARN: semgrep.json not created"
+            --max-target-bytes 5000000 \
+            $BASELINE_ARG || true
+          ls -la semgrep.sarif semgrep.json 2>&1 || echo "WARN: outputs not created"
 
       - name: Summarize + gate
         if: always()
@@ -144,10 +155,6 @@ jobs:
                   lines.append(f"| {sev} | `{rule}` | `{path}:{line}` |")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write("\n".join(lines) + "\n")
-          # Tambien al stdout del job: cuando la cuota de artifacts esta llena no
-          # hay SARIF descargable y el step summary no se ve con `gh run view --log`,
-          # asi que un gate rojo no dice QUE lo disparo.
-          print("\n".join(lines))
           fail_on = os.environ.get("FAIL_ON", "critical").lower()
           crit = by_sev.get("ERROR", 0)
           high = by_sev.get("WARNING", 0)
@@ -173,23 +180,18 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: semgrep-results
           path: |
             semgrep.sarif
             semgrep.json
-          retention-days: 7
+          retention-days: 30
 
   gitleaks:
     name: Gitleaks secrets
     if: ${{ inputs.run-gitleaks }}
-    runs-on: [self-hosted, zentto-ci]
-    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
-    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
-    concurrency:
-      group: sec-gitleaks-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -247,17 +249,13 @@ jobs:
             gitleaks.sarif
             gitleaks.json
             gitleaks.log
-          retention-days: 7
+          retention-days: 30
 
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
     if: ${{ inputs.run-trivy }}
-    runs-on: [self-hosted, zentto-ci]
-    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
-    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
-    concurrency:
-      group: sec-trivy-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -323,23 +321,18 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: trivy-results
           path: |
             trivy-fs.sarif
             trivy-config.sarif
-          retention-days: 7
+          retention-days: 30
 
   osv-scanner:
     name: OSV-Scanner (CVE deps)
     if: ${{ inputs.run-osv }}
-    runs-on: [self-hosted, zentto-ci]
-    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
-    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
-    concurrency:
-      group: sec-osv-scanner-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -367,21 +360,16 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: osv-results
           path: osv.sarif
-          retention-days: 7
+          retention-days: 30
 
   zizmor:
     name: zizmor (GitHub Actions audit)
     if: ${{ inputs.run-zizmor }}
-    runs-on: [self-hosted, zentto-ci]
-    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
-    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
-    concurrency:
-      group: sec-zizmor-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       security-events: write
@@ -416,23 +404,18 @@ jobs:
       - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
-        continue-on-error: true
         with:
           name: zizmor-results
           path: |
             zizmor.sarif
             zizmor.txt
-          retention-days: 7
+          retention-days: 30
 
   actionlint:
     name: actionlint (workflow syntax)
     if: ${{ inputs.run-actionlint }}
-    runs-on: [self-hosted, zentto-ci]
-    # Un push nuevo al mismo PR deja obsoleto el run anterior: cancelarlo en
-    # vez de dejarlo ocupando un slot del runner propio, que solo tiene 3.
-    concurrency:
-      group: sec-actionlint-${{ github.repository }}-${{ github.ref }}
-      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
