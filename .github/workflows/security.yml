@@ -60,9 +60,14 @@ concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Optimizacion de minutos hosted (2026-08, directriz del fundador): cada job corre SOLO
+# en el camino a produccion — push a main, PR con base main, cron o workflow_dispatch. En
+# push/PR a developer los jobs se saltan (0 minutos facturables). El loop feature->developer
+# lo cubre `zb security` local (obligatorio pre-push). Sigue siendo advisory (no bloquea).
 jobs:
   semgrep:
     name: Semgrep SAST
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -189,7 +194,7 @@ jobs:
 
   gitleaks:
     name: Gitleaks secrets
-    if: ${{ inputs.run-gitleaks }}
+    if: ${{ inputs.run-gitleaks && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -260,7 +265,7 @@ jobs:
 
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
-    if: ${{ inputs.run-trivy }}
+    if: ${{ inputs.run-trivy && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -337,7 +342,7 @@ jobs:
 
   osv-scanner:
     name: OSV-Scanner (CVE deps)
-    if: ${{ inputs.run-osv }}
+    if: ${{ inputs.run-osv && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -374,7 +379,7 @@ jobs:
 
   zizmor:
     name: zizmor (GitHub Actions audit)
-    if: ${{ inputs.run-zizmor }}
+    if: ${{ inputs.run-zizmor && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -420,7 +425,7 @@ jobs:
 
   actionlint:
     name: actionlint (workflow syntax)
-    if: ${{ inputs.run-actionlint }}
+    if: ${{ inputs.run-actionlint && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
