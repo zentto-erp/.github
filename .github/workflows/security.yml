@@ -64,11 +64,26 @@ concurrency:
 # en el camino a produccion — push a main, PR con base main, cron o workflow_dispatch. En
 # push/PR a developer los jobs se saltan (0 minutos facturables). El loop feature->developer
 # lo cubre `zb security` local (obligatorio pre-push). Sigue siendo advisory (no bloquea).
+# Donde corre el escaneo (INFRA-17). Los 6 jobs usan la MISMA expresion:
+#   repo PRIVADO -> [self-hosted, zentto-ci]  (runners propios, coste 0)
+#   repo PUBLICO -> ubuntu-latest             (obligado: el runner group no asigna
+#                                              runners propios a repos publicos y el
+#                                              job quedaria en queued para siempre;
+#                                              ademas correr codigo de forks en
+#                                              hardware propio es riesgo conocido)
+#   vars.CI_ROUTING_MODE='hosted-emergency' -> ubuntu-latest (valvula: si el dellxeon
+#                                              cae se cambia la variable de org sin
+#                                              tocar este archivo)
+# Antes estaban fijos en ubuntu-latest y el escaneo era lo unico que gastaba minutos
+# del plan (se agotaron los 3.000 del ciclo el 2026-09-14). El motivo historico —un
+# unico runner propio compartiendo slots con los deploys, que dejo despliegues 131 min
+# en cola— ya no aplica: hoy son 6 runners en el dellxeon, separados del servidor de
+# produccion, y el escaneo solo corre en el camino a main.
 jobs:
   semgrep:
     name: Semgrep SAST
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -195,7 +210,7 @@ jobs:
   gitleaks:
     name: Gitleaks secrets
     if: ${{ inputs.run-gitleaks && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -266,7 +281,7 @@ jobs:
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
     if: ${{ inputs.run-trivy && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -276,7 +291,7 @@ jobs:
 
       # Cache Trivy DB (~150MB) entre runs.
       # Sin cache: cada run descarga la DB de mirror.gcr.io (lento + rate-limit risk).
-      # Con cache: -2 a 3 min/run, key rotativa por mes (Trivy publica DBs ~1x/dÃ­a).
+      # Con cache: -2 a 3 min/run, key rotativa por mes (Trivy publica DBs ~1x/dÃa).
       # Docs: https://trivy.dev/docs/v0.70/guide/configuration/cache/
       - name: Cache Trivy DB
         uses: actions/cache@v4
@@ -299,7 +314,7 @@ jobs:
           # ignore-unfixed: true â†’ no reporta CVEs sin patch upstream (no podemos accionarlos).
           # Docs: https://trivy.dev/docs/v0.70/guide/scanner/vulnerability/
           ignore-unfixed: true
-          # scanners explÃ­citos: vuln + misconfig (sin secret â€” gitleaks lo cubre aparte
+          # scanners explÃcitos: vuln + misconfig (sin secret â€” gitleaks lo cubre aparte
           # per https://trivy.dev/docs/v0.70/guide/scanner/secret/#recommendation).
           scanners: vuln,misconfig
           exit-code: '0'
@@ -343,7 +358,7 @@ jobs:
   osv-scanner:
     name: OSV-Scanner (CVE deps)
     if: ${{ inputs.run-osv && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -380,7 +395,7 @@ jobs:
   zizmor:
     name: zizmor (GitHub Actions audit)
     if: ${{ inputs.run-zizmor && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -426,7 +441,7 @@ jobs:
   actionlint:
     name: actionlint (workflow syntax)
     if: ${{ inputs.run-actionlint && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 10
     permissions:
       contents: read
