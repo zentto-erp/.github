@@ -12,6 +12,11 @@ name: Zentto Security Scan (reusable)
 #   permissions:
 #     contents: read
 #     security-events: write
+#     actions: read               # opcional, pero recomendado: sin el, este
+#                                 # workflow no puede consultar si ya hubo un
+#                                 # escaneo verde reciente y escanea completo
+#                                 # siempre (mas minutos). Un reusable solo
+#                                 # tiene los permisos que le da QUIEN LLAMA.
 #   jobs:
 #     security:
 #       uses: zentto-erp/.github/.github/workflows/security.yml@main
@@ -111,12 +116,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MAX_AGE_DAYS: ${{ vars.SECURITY_MAX_AGE_DAYS || '15' }}
         run: |
-          set -euo pipefail
+          # SIN `set -e` a proposito. Este paso solo DECIDE cuanto escanear; que
+          # se caiga bloquea el escaneo entero y pinta de rojo el PR de decenas
+          # de repos. Cualquier cosa que no sepa responder se resuelve
+          # escaneando completo.
+          set -uo pipefail
+
+          decidir() {
+            echo "completo=$1" >> "$GITHUB_OUTPUT"
+            echo "motivo=$2"   >> "$GITHUB_OUTPUT"
+            echo "alcance: $2"
+            exit 0
+          }
 
           if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "completo=true" >> "$GITHUB_OUTPUT"
-            echo "motivo=cron/manual: escaneo completo" >> "$GITHUB_OUTPUT"
-            exit 0
+            decidir true "cron/manual: escaneo completo"
           fi
 
           # ¿Tocamos dependencias o infraestructura?
@@ -129,26 +143,41 @@ jobs:
             CAMBIOS="$(git diff --name-only "$BASE" HEAD 2>/dev/null || true)"
           fi
           if [ -z "$CAMBIOS" ] || echo "$CAMBIOS" | grep -qiE '(^|/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.mod|go\.sum|requirements.*\.txt|Pipfile|poetry\.lock|Gemfile|composer\.json|Cargo\.toml|Dockerfile[^/]*|.*\.tf)$'; then
-            echo "completo=true" >> "$GITHUB_OUTPUT"
-            echo "motivo=cambian dependencias o infra: escaneo completo" >> "$GITHUB_OUTPUT"
-            exit 0
+            decidir true "cambian dependencias o infra: escaneo completo"
           fi
 
           # Solo codigo: ¿hay un escaneo verde reciente?
-          ULTIMO="$(gh api "repos/${{ github.repository }}/actions/workflows/security.yml/runs?status=success&per_page=1"                       --jq '.workflow_runs[0].created_at' 2>/dev/null || echo '')"
+          #
+          # Leer el historial de runs necesita `actions: read`, y el token de un
+          # workflow reusable SOLO tiene lo que le concede quien lo llama. Un
+          # repo cuyo security.yml declare unicamente `contents: read` recibe un
+          # 403 aqui. Antes eso mataba el paso (`set -e` + `DIAS: unbound
+          # variable`) y dejaba en rojo repos que no tenian ningun problema de
+          # seguridad. Ahora el 403 solo cuesta un escaneo completo: en
+          # seguridad se falla ABIERTO — si no puedo demostrar que hay un verde
+          # reciente, escaneo.
+          if ! RESP="$(gh api "repos/${{ github.repository }}/actions/workflows/security.yml/runs?status=success&per_page=1" --jq '.workflow_runs[0].created_at' 2>&1)"; then
+            echo "::notice::sin acceso al historial de runs (${RESP}). Se escanea completo. Para activar la caducidad, anade 'actions: read' al bloque permissions del security.yml de este repo."
+            decidir true "sin acceso al historial de runs: escaneo completo"
+          fi
+          ULTIMO="$RESP"
+
           if [ -z "$ULTIMO" ] || [ "$ULTIMO" = "null" ]; then
-            echo "completo=true" >> "$GITHUB_OUTPUT"
-            echo "motivo=sin escaneo previo registrado: escaneo completo" >> "$GITHUB_OUTPUT"
-            exit 0
+            decidir true "sin escaneo previo registrado: escaneo completo"
           fi
-          DIAS=$(( ( $(date +%s) - $(date -d "$ULTIMO" +%s) ) / 86400 ))
+
+          # `date -d` con una fecha ilegible devolvia cadena vacia y reventaba la
+          # aritmetica. Se valida antes en vez de confiar.
+          TS="$(date -d "$ULTIMO" +%s 2>/dev/null || echo '')"
+          if [ -z "$TS" ]; then
+            decidir true "fecha del ultimo escaneo ilegible (${ULTIMO}): escaneo completo"
+          fi
+
+          DIAS=$(( ( $(date +%s) - TS ) / 86400 ))
           if [ "$DIAS" -ge "${MAX_AGE_DAYS}" ]; then
-            echo "completo=true" >> "$GITHUB_OUTPUT"
-            echo "motivo=ultimo escaneo hace ${DIAS}d (limite ${MAX_AGE_DAYS}d): escaneo completo" >> "$GITHUB_OUTPUT"
-          else
-            echo "completo=false" >> "$GITHUB_OUTPUT"
-            echo "motivo=solo codigo y escaneo verde hace ${DIAS}d (< ${MAX_AGE_DAYS}d): se omiten deps y SAST" >> "$GITHUB_OUTPUT"
+            decidir true "ultimo escaneo hace ${DIAS}d (limite ${MAX_AGE_DAYS}d): escaneo completo"
           fi
+          decidir false "solo codigo y escaneo verde hace ${DIAS}d (< ${MAX_AGE_DAYS}d): se omiten deps y SAST"
 
       - name: Resumen
         run: echo "### Seguridad — ${{ steps.r.outputs.motivo }}" >> "$GITHUB_STEP_SUMMARY"
