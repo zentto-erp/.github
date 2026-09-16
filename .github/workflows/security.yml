@@ -80,9 +80,83 @@ concurrency:
 # en cola— ya no aplica: hoy son 6 runners en el dellxeon, separados del servidor de
 # produccion, y el escaneo solo corre en el camino a main.
 jobs:
+  # ── Caducidad del escaneo (directriz del fundador, 2026-09-15) ─────────────
+  # En despliegue continuo, repetir el escaneo COMPLETO en cada cambio de
+  # codigo es gastar tiempo en algo que se acaba de comprobar. La regla:
+  #
+  #   · Cambian las DEPENDENCIAS (package*.json, lock, go.mod, requirements,
+  #     Dockerfile, *.tf) -> se escanea TODO, sin excusa.
+  #   · No cambian, y hubo un escaneo verde hace menos de N dias (15 por
+  #     defecto, `vars.SECURITY_MAX_AGE_DAYS`) -> se saltan los de
+  #     dependencias (Trivy, OSV) y el SAST.
+  #   · Cron y workflow_dispatch -> siempre completo, pase lo que pase.
+  #
+  # Gitleaks NO caduca nunca: un secreto se cuela en cualquier commit y
+  # detectarlo cuesta segundos. Lo mismo actionlint/zizmor, que son baratos y
+  # solo miran los propios workflows.
+  decidir:
+    name: Decidir alcance del escaneo
+    runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
+    timeout-minutes: 5
+    outputs:
+      completo: ${{ steps.r.outputs.completo }}
+      motivo: ${{ steps.r.outputs.motivo }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAX_AGE_DAYS: ${{ vars.SECURITY_MAX_AGE_DAYS || '15' }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "schedule" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "completo=true" >> "$GITHUB_OUTPUT"
+            echo "motivo=cron/manual: escaneo completo" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ¿Tocamos dependencias o infraestructura?
+          BASE="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE="$(git rev-parse HEAD~1 2>/dev/null || echo '')"
+          fi
+          CAMBIOS=""
+          if [ -n "$BASE" ]; then
+            CAMBIOS="$(git diff --name-only "$BASE" HEAD 2>/dev/null || true)"
+          fi
+          if [ -z "$CAMBIOS" ] || echo "$CAMBIOS" | grep -qiE '(^|/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|go\.mod|go\.sum|requirements.*\.txt|Pipfile|poetry\.lock|Gemfile|composer\.json|Cargo\.toml|Dockerfile[^/]*|.*\.tf)$'; then
+            echo "completo=true" >> "$GITHUB_OUTPUT"
+            echo "motivo=cambian dependencias o infra: escaneo completo" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Solo codigo: ¿hay un escaneo verde reciente?
+          ULTIMO="$(gh api "repos/${{ github.repository }}/actions/workflows/security.yml/runs?status=success&per_page=1"                       --jq '.workflow_runs[0].created_at' 2>/dev/null || echo '')"
+          if [ -z "$ULTIMO" ] || [ "$ULTIMO" = "null" ]; then
+            echo "completo=true" >> "$GITHUB_OUTPUT"
+            echo "motivo=sin escaneo previo registrado: escaneo completo" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          DIAS=$(( ( $(date +%s) - $(date -d "$ULTIMO" +%s) ) / 86400 ))
+          if [ "$DIAS" -ge "${MAX_AGE_DAYS}" ]; then
+            echo "completo=true" >> "$GITHUB_OUTPUT"
+            echo "motivo=ultimo escaneo hace ${DIAS}d (limite ${MAX_AGE_DAYS}d): escaneo completo" >> "$GITHUB_OUTPUT"
+          else
+            echo "completo=false" >> "$GITHUB_OUTPUT"
+            echo "motivo=solo codigo y escaneo verde hace ${DIAS}d (< ${MAX_AGE_DAYS}d): se omiten deps y SAST" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resumen
+        run: echo "### Seguridad — ${{ steps.r.outputs.motivo }}" >> "$GITHUB_STEP_SUMMARY"
+
   semgrep:
     name: Semgrep SAST
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main' }}
+    needs: decidir
+    if: ${{ needs.decidir.outputs.completo == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
     runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 20
     permissions:
@@ -280,7 +354,8 @@ jobs:
 
   trivy:
     name: Trivy (deps + IaC + Dockerfile)
-    if: ${{ inputs.run-trivy && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
+    needs: decidir
+    if: ${{ needs.decidir.outputs.completo == 'true' && (inputs.run-trivy && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main')) }}
     runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 15
     permissions:
@@ -357,7 +432,8 @@ jobs:
 
   osv-scanner:
     name: OSV-Scanner (CVE deps)
-    if: ${{ inputs.run-osv && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main') }}
+    needs: decidir
+    if: ${{ needs.decidir.outputs.completo == 'true' && (inputs.run-osv && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || github.base_ref == 'main')) }}
     runs-on: ${{ (vars.CI_ROUTING_MODE == 'hosted-emergency' || github.event.repository.private == false) && 'ubuntu-latest' || fromJSON('["self-hosted","zentto-ci"]') }}
     timeout-minutes: 15
     permissions:
@@ -385,11 +461,15 @@ jobs:
           category: osv-scanner
 
       - name: Upload artifacts
+        # if-no-files-found: el scanner no siempre llega a escribir osv.sarif
+        # (repo sin manifiestos, fallo de red) y el paso tumbaba el job entero
+        # con "Path does not exist: osv.sarif" — un falso rojo permanente.
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: osv-results
           path: osv.sarif
+          if-no-files-found: ignore
           retention-days: 30
 
   zizmor:
