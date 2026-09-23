@@ -54,6 +54,10 @@ on:
         description: 'Upload SARIF to GitHub code scanning. Requires public repo or GHAS. Failures are tolerated.'
         type: boolean
         default: true
+      private-scope:
+        description: 'Scope npm privado a vigilar en los package-lock.json. Vacio = no vigilar.'
+        type: string
+        default: '@zentto'
 
 permissions:
   contents: read
@@ -181,6 +185,79 @@ jobs:
 
       - name: Resumen
         run: echo "### Seguridad — ${{ steps.r.outputs.motivo }}" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Paquetes privados resueltos desde el registro PUBLICO (advisory) ─────
+      # Un package-lock.json puede pinear la URL completa de un paquete del
+      # scope privado apuntando a registry.npmjs.org. El `.npmrc` del repo no
+      # manda: gana la URL del lock. Mientras el scope no este registrado en el
+      # registro publico, cualquiera puede publicar con ese nombre y un
+      # `npm install` que re-resuelva dentro del rango se trae su codigo.
+      #
+      # Vive en este job a proposito, y no como job propio: `decidir` ya corre
+      # en TODOS los eventos y ya tiene el checkout, asi que el aviso sale en el
+      # PR a developer —donde arreglarlo es barato— sin anadir un runner ni
+      # tocar el gate de camino-a-main (ZENTTO-CICD-009), que existe por los
+      # minutos hosted. Esto no descarga nada: es un grep, tarda segundos.
+      #
+      # ADVISORY (ZENTTO-CICD-008): avisa y nunca falla el check.
+      - name: Paquetes privados desde el registro publico (advisory)
+        if: ${{ inputs.private-scope != '' }}
+        continue-on-error: true
+        env:
+          SCOPE: ${{ inputs.private-scope }}
+        run: |
+          set -uo pipefail
+
+          # `git ls-files` y no `find`: solo lo versionado, sin entrar en node_modules.
+          LOCKS="$(git ls-files -- '*package-lock.json' | grep -v 'node_modules/' || true)"
+          if [ -z "$LOCKS" ]; then
+            echo "Sin package-lock.json versionados."
+            exit 0
+          fi
+
+          PAT='"resolved"[[:space:]]*:[[:space:]]*"https://registry\.npmjs\.org/'"${SCOPE}"'/'
+          TOTAL=0
+          DETALLE=""
+          for lock in $LOCKS; do
+            [ -f "$lock" ] || continue
+            N=$(grep -cE "$PAT" "$lock" 2>/dev/null) || N=0
+            [ "${N:-0}" -gt 0 ] || continue
+            TOTAL=$((TOTAL + N))
+            DETALLE="${DETALLE}- \`${lock}\` — ${N}
+          "
+          done
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "Ninguna dependencia ${SCOPE} resuelta desde el registro publico."
+            exit 0
+          fi
+
+          PAQUETES="$(grep -ohE 'https://registry\.npmjs\.org/'"${SCOPE}"'/[^"]+\.tgz' $LOCKS 2>/dev/null \
+            | sed -E 's|.*/('"${SCOPE}"'/[^/]+)/-/.+-([0-9][^/]*)\.tgz$|\1@\2|' \
+            | sort -u)"
+
+          echo "::warning title=Dependencias privadas desde el registro publico::${TOTAL} entradas ${SCOPE}/* resuelven desde registry.npmjs.org en los package-lock.json. El .npmrc no manda: gana la URL del lock."
+
+          {
+            echo "### ⚠️ ${TOTAL} dependencias \`${SCOPE}\` se resuelven desde el registro **publico**"
+            echo
+            echo "El \`.npmrc\` apunta el scope al registro privado, pero el lock pinea la URL completa y **esa gana**."
+            echo "Mientras el scope no este registrado en npmjs, un tercero puede publicar con ese nombre."
+            echo
+            echo "**Ficheros:**"
+            echo
+            printf '%s' "$DETALLE"
+            echo
+            echo "**Paquetes:**"
+            echo
+            echo '```'
+            echo "$PAQUETES"
+            echo '```'
+            echo
+            echo "Arreglo: reapuntar la linea \`resolved\` al registro privado. Si el \`integrity\` del lock coincide con el del tarball privado —lo normal cuando se migro tal cual— no hay que tocar nada mas ni regenerar el lock."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          exit 0
 
   semgrep:
     name: Semgrep SAST
