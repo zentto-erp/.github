@@ -57,6 +57,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Un solo run de seguridad por repo+rama: un push nuevo cancela el anterior.
 # `github.workflow` resuelve al workflow del REPO que llama (cada consumer su grupo).
